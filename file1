@@ -1,0 +1,62 @@
+pipeline {
+    agent any
+    environment {
+        PREFIX = "OL_"
+        BRANCH = 'release/2511'
+        EXCLUDE = 'OL-FULL-BUILD,OL_lightspeed-build'
+        MAX='9'
+        SLEEP='30'
+    }
+    stages {
+        stage('Scan & Trigger Jobs') {
+            steps {
+                script {
+                    def excludeList = EXCLUDE.split(',')
+                    def defaultParams = [
+                        STRING_PARAM: 'default_value',
+                        BOOL_PARAM: true,
+                        BRANCH_NAME: BRANCH
+                    ]
+
+                    def jobsToTrigger = Jenkins.instance.getAllItems().findAll { item ->
+                        if (item instanceof org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject 
+                            && item.name.startsWith(PREFIX)
+                            && !excludeList.contains(item.name)) {
+
+                            def branchObj = item.getBranch(BRANCH)
+                            if (branchObj != null && branchObj.lastBuild != null) {
+                                if (branchObj.lastBuild.result in [hudson.model.Result.SUCCESS, 
+                                                                   hudson.model.Result.FAILURE, 
+                                                                   hudson.model.Result.ABORTED]) {
+                                    return true
+                                }
+                            } else {
+                                println "Branch ${BRANCH} does not exist or has no builds for ${item.name}"
+                            }
+                        }
+                        return false
+                    }
+
+                    jobsToTrigger.each { item ->
+                        def job = item.getBranch(BRANCH)
+
+                        println "Triggering job ${item.name}:${BRANCH} with default parameters ${defaultParams}"
+                        
+                        // Throttle
+                        while(Jenkins.instance.computers.sum{ it.countBusy()} >= MAX){
+                            println "[WAIT] Executors busy >= ${MAX}. Retrying in ${SLEEP} seconds..."
+                            sleep(SLEEP)
+                        }
+
+                        job.scheduleBuild2(0, new hudson.model.ParametersAction(
+                            defaultParams.collect { key, value -> new hudson.model.StringParameterValue(key, value.toString()) }
+                        ))
+                    }
+                    
+                    def queueItems = Jenkins.instance.queue.items
+                    println "Number of jobs in queue: ${queueItems.size()}"
+                }
+            }
+        }
+    }
+}
